@@ -1,0 +1,32 @@
+# Python cache and build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+
+# Local data & databases
+/data/
+*.db
+
+# Logs
+*.log
+
