@@ -27,7 +27,11 @@ async def main() -> None:
     await app.initialize()
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dispatcher.start_polling(bot)
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await app.shutdown()
+        await bot.session.close()
 
 
 def run() -> None:

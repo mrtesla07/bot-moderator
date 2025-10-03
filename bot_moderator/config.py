@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
     network_secret: str | None = None
     default_language: Literal["ru", "en"] = "ru"
     report_chat_id: int | None = None
+    web_enabled: bool = True
+    web_host: str = "0.0.0.0"
+    web_port: int = 8080
 
     model_config = SettingsConfigDict(
         env_file=".env",

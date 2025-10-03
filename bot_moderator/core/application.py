@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Bot, Dispatcher
+import uvicorn
 
 from ..config import Settings
 from ..data.database import Database
@@ -13,6 +16,7 @@ from ..services.container import ServiceContainer
 from ..services.captcha_service import CaptchaService
 from ..services.moderation_service import ModerationService
 from ..services.user_service import UserService
+from ..web.server import create_app
 
 
 class Application:
@@ -22,6 +26,9 @@ class Application:
         self.bot = bot
         self.database = Database(url=settings.database_url, storage_dir=settings.storage_dir)
         self.services: ServiceContainer | None = None
+        self.web_app = None
+        self._web_server: uvicorn.Server | None = None
+        self._web_task: asyncio.Task | None = None
 
     async def initialize(self) -> None:
         await self.database.connect()
@@ -53,5 +60,24 @@ class Application:
 
         register_handlers(self.dispatcher)
 
+        if self.settings.web_enabled:
+            assert self.services is not None  # for type-checkers
+            self.web_app = create_app(self.services, self.settings)
+            config = uvicorn.Config(
+                self.web_app,
+                host=self.settings.web_host,
+                port=self.settings.web_port,
+                log_level=self.settings.log_level.lower(),
+                loop="asyncio",
+            )
+            self._web_server = uvicorn.Server(config)
+            self._web_task = asyncio.create_task(self._web_server.serve())
+
     async def shutdown(self) -> None:
+        if self._web_server is not None:
+            self._web_server.should_exit = True
+        if self._web_task is not None:
+            await self._web_task
+            self._web_task = None
+        self._web_server = None
         await self.database.disconnect()

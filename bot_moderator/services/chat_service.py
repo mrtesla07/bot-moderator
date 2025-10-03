@@ -66,3 +66,9 @@ class ChatService:
                 update(Chat).where(Chat.id == chat_id).values(subscription_tier=tier, updated_at=datetime.utcnow())
             )
             await session.commit()
+
+    async def list_chats(self) -> list[Chat]:
+        async with self._db.session() as session:
+            result = await session.execute(select(Chat).order_by(Chat.updated_at.desc()))
+            return list(result.scalars())
+
