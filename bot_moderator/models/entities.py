@@ -1,10 +1,10 @@
-﻿"""Database models used by the moderator bot."""
+"""Database models used by the moderator bot."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, UniqueConstraint
+from sqlalchemy import JSON, Column, String, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from .settings import ChatSettings, DEFAULT_SETTINGS
@@ -93,9 +93,20 @@ class JoinRequest(SQLModel, table=True):
     expires_at: datetime | None = Field(default=None)
 
 
+
+class AdminAccount(SQLModel, table=True):
+    __tablename__ = "admin_users"
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(sa_column=Column(String(50), unique=True))
+    password: str = Field(sa_column=Column(String(200)))
+    is_active: bool = Field(default=True)
+    is_superuser: bool = Field(default=True)
+
 def settings_from_row(row: Chat) -> ChatSettings:
     """Restore :class:`ChatSettings` instance from a database row."""
 
     data = DEFAULT_SETTINGS.model_dump()
     data.update(row.settings or {})
     return ChatSettings.model_validate(data)
+

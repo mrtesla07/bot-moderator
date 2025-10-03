@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     web_enabled: bool = True
     web_host: str = "0.0.0.0"
     web_port: int = 8080
+    admin_username: str = "admin"
+    admin_password: str = "change-me"
+    admin_redis_url: str = "redis://localhost:6379/0"
+    admin_logo_url: str | None = None
+    admin_default_locale: str = "ru_RU"
+    admin_database_url: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

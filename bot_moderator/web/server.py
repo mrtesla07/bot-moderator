@@ -1,97 +1,129 @@
-﻿"""FastAPI server exposing a lightweight admin UI."""
+"""FastAPI application wiring for the admin dashboard."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
+from aioredis import Redis, from_url as redis_from_url
+from fastapi import FastAPI
+from fastapi_admin.app import FastAPIAdmin
+from fastapi_admin.middlewares import language_processor
+from fastapi_admin.providers.login import UsernamePasswordProvider
+from fastapi_admin.routes import router as admin_router
+from sqlalchemy.engine import make_url
+from starlette.middleware.base import BaseHTTPMiddleware
+from tortoise.contrib.fastapi import register_tortoise
 
 from ..config import Settings
-from ..services.container import ServiceContainer
-
-TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+from . import admin_models, admin_resources
 
 
-def create_app(services: ServiceContainer, settings: Settings) -> FastAPI:
-    app = FastAPI(title="Bot Moderator UI", docs_url=None, redoc_url=None)
-    app.state.services = services
-    app.state.settings = settings
+def create_app(settings: Settings) -> FastAPI:
+    """Configure a FastAPI application with FastAPI-Admin mounted at the root."""
 
-    @app.get("/")
-    async def index(request: Request):
-        chats = await services.chats.list_chats()
-        return TEMPLATES.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "chats": chats,
-            },
-        )
+    admin_app = _build_admin_app()
+    _register_resources(admin_app)
 
-    @app.get("/chats/{chat_id}")
-    async def chat_detail(chat_id: int, request: Request):
-        try:
-            chat_settings = await services.chats.get_settings(chat_id)
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        chat_row = None
-        for chat in await services.chats.list_chats():
-            if chat.id == chat_id:
-                chat_row = chat
-                break
-        return TEMPLATES.TemplateResponse(
-            "chat_detail.html",
-            {
-                "request": request,
-                "chat_id": chat_id,
-                "chat": chat_row,
-                "settings": chat_settings,
-                "saved": request.query_params.get("saved") == "1",
-            },
-        )
+    tortoise_url = settings.admin_database_url or _convert_database_url(settings.database_url)
+    register_tortoise(
+        admin_app,
+        db_url=tortoise_url,
+        modules={"models": ["bot_moderator.web.admin_models"]},
+        generate_schemas=False,
+        add_exception_handlers=True,
+    )
 
-    @app.post("/chats/{chat_id}")
-    async def update_chat(
-        chat_id: int,
-        request: Request,
-        subscription_tier: str = Form("free"),
-        flood_message_limit: int = Form(...),
-        flood_interval_seconds: int = Form(...),
-        flood_punishment: str = Form("mute"),
-        stop_words_enabled: bool = Form(False),
-        captcha_enabled: bool = Form(False),
-        silent_enabled: bool = Form(False),
-        welcome_text: str = Form(""),
-        reports_enabled: bool = Form(False),
-        reports_chat_id: str = Form(""),
-    ):
-        try:
-            chat_settings = await services.chats.get_settings(chat_id)
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    provider = UsernamePasswordProvider(
+        admin_model=admin_models.AdminUser,
+        login_title="Bot Moderator Admin",
+        login_logo_url=settings.admin_logo_url,
+    )
 
-        chat_settings.subscription.tier = subscription_tier
-        chat_settings.flood.message_limit = max(1, flood_message_limit)
-        chat_settings.flood.interval_seconds = max(1, flood_interval_seconds)
-        chat_settings.flood.punishment = flood_punishment  # type: ignore[assignment]
-        chat_settings.stop_words.enabled = stop_words_enabled
-        chat_settings.captcha.enabled = captcha_enabled
-        chat_settings.silent_mode.enabled = silent_enabled
-        chat_settings.welcome.text = welcome_text
-        chat_settings.reports.enabled = reports_enabled
-        if reports_chat_id:
-            try:
-                chat_settings.reports.destination_chat_id = int(reports_chat_id)
-            except ValueError:
-                chat_settings.reports.destination_chat_id = None
-        else:
-            chat_settings.reports.destination_chat_id = None
+    state: dict[str, Optional[Redis]] = {"redis": None}
+    configured = {"done": False}
 
-        await services.chats.save_settings(chat_id, chat_settings)
+    @admin_app.on_event("startup")
+    async def _startup() -> None:
+        redis = redis_from_url(settings.admin_redis_url, encoding="utf-8", decode_responses=True)
+        state["redis"] = redis
+        if not configured["done"]:
+            await admin_app.configure(
+                redis=redis,
+                logo_url=settings.admin_logo_url,
+                default_locale=settings.admin_default_locale,
+                language_switch=False,
+                admin_path="/",
+                providers=[provider],
+            )
+            await _ensure_default_admin(provider, settings)
+            configured["done"] = True
 
-        url = request.url_for("chat_detail", chat_id=chat_id) + "?saved=1"
-        return RedirectResponse(url=url, status_code=303)
+    @admin_app.on_event("shutdown")
+    async def _shutdown() -> None:
+        redis = state.pop("redis", None)
+        if redis is not None:
+            await redis.close()
+        state["redis"] = None
 
+    app = FastAPI(title="Bot Moderator Admin", docs_url=None, redoc_url=None)
+    app.mount("/", admin_app)
     return app
+
+
+def _build_admin_app() -> FastAPIAdmin:
+    app = FastAPIAdmin(title="Bot Moderator Admin", description="Admin panel for the moderator bot")
+    app.add_middleware(BaseHTTPMiddleware, dispatch=language_processor)
+    app.include_router(admin_router)
+    return app
+
+
+def _register_resources(admin_app: FastAPIAdmin) -> None:
+    admin_app.register_resources(
+        admin_resources.ChatResource,
+        admin_resources.UserStateResource,
+        admin_resources.BanRecordResource,
+        admin_resources.ActionLogResource,
+        admin_resources.PendingCaptchaResource,
+        admin_resources.JoinRequestResource,
+        admin_resources.AdminUserResource,
+    )
+
+
+async def _ensure_default_admin(provider: UsernamePasswordProvider, settings: Settings) -> None:
+    if not settings.admin_username or not settings.admin_password:
+        return
+    exists = await admin_models.AdminUser.filter(username=settings.admin_username).exists()
+    if not exists:
+        await provider.create_user(
+            username=settings.admin_username,
+            password=settings.admin_password,
+            is_active=True,
+            is_superuser=True,
+        )
+
+
+def _convert_database_url(sqlalchemy_url: str) -> str:
+    url = make_url(sqlalchemy_url)
+    driver = url.drivername
+    if driver.startswith("sqlite"):
+        if url.database is None or url.database == ":memory":
+            return "sqlite://:memory:"
+        database_path = Path(url.database)
+        if not database_path.is_absolute():
+            database_path = (Path.cwd() / database_path).resolve()
+        return f"sqlite://{database_path.as_posix()}"
+    scheme_map = {
+        "postgresql": "postgres",
+        "postgresql+asyncpg": "postgres",
+        "postgresql+psycopg": "postgres",
+        "mysql": "mysql",
+        "mysql+asyncmy": "mysql",
+        "mysql+aiomysql": "mysql",
+    }
+    for prefix, scheme in scheme_map.items():
+        if driver.startswith(prefix):
+            updated = url.set(drivername=scheme)
+            return updated.render_as_string(hide_password=False)
+    raise ValueError(f"Unsupported database URL for FastAPI-Admin: {sqlalchemy_url}")
+

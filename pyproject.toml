@@ -18,10 +18,13 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "pyyaml>=6.0.1",
     "orjson>=3.10.6",
-    "fastapi>=0.114.0",
+    "fastapi>=0.118.0",
     "uvicorn[standard]>=0.30.5",
     "jinja2>=3.1",
-    "python-multipart>=0.0.9"
+    "python-multipart>=0.0.9",
+    "tortoise-orm>=0.25",
+    "aioredis>=2.0.1",
+    "fastapi-admin>=1.0.4"
 ]
 
 [project.optional-dependencies]

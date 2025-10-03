@@ -6,8 +6,19 @@ services:
     container_name: bot-moderator
     env_file:
       - .env
+    environment:
+      - ADMIN_REDIS_URL=redis://redis:6379/0
     volumes:
       - ./data:/app/data
     ports:
       - "8080:8080"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: bot-moderator-redis
+    volumes:
+      - ./data/redis:/data
     restart: unless-stopped

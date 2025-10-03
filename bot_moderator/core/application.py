@@ -1,4 +1,4 @@
-﻿"""Application wiring and bootstrap helpers."""
+"""Application wiring and bootstrap helpers."""
 
 from __future__ import annotations
 
@@ -61,8 +61,7 @@ class Application:
         register_handlers(self.dispatcher)
 
         if self.settings.web_enabled:
-            assert self.services is not None  # for type-checkers
-            self.web_app = create_app(self.services, self.settings)
+            self.web_app = create_app(self.settings)
             config = uvicorn.Config(
                 self.web_app,
                 host=self.settings.web_host,
@@ -81,3 +80,4 @@ class Application:
             self._web_task = None
         self._web_server = None
         await self.database.disconnect()
+
