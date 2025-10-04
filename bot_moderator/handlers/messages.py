@@ -101,6 +101,12 @@ async def apply_actions(message: Message, result: ModerationResult, settings) ->
                 )
             except Exception as exc:  # noqa: BLE001
                 logging.warning("lift restrictions failed", exc_info=exc)
+        elif isinstance(action, CloseTopic):
+            thread_id = action.payload["message_thread_id"]
+            try:
+                await bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+            except Exception as exc:  # noqa: BLE001
+                logging.warning("close forum topic failed", exc_info=exc)
         elif isinstance(action, SendMessage):
             if _should_silence(settings, "service"):
                 continue

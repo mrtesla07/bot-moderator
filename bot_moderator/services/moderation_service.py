@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Deque
@@ -21,6 +22,7 @@ from ..core.actions import (
     RestrictUser,
     SendMessage,
     WarnUser,
+    CloseTopic,
 )
 from ..core.result import ModerationResult
 from ..models.settings import ChatSettings
@@ -38,6 +40,12 @@ JOIN_FILTER_PRESETS = {
     "casino": ["casino", "bet", "slot", "1xbet"],
     "numbers": ["123", "777", "999", "000"],
 }
+
+@dataclass(slots=True)
+class ChannelPostInfo:
+    message_id: int
+    posted_at: datetime
+    thread_id: int | None
 
 
 class ModerationService:
@@ -60,6 +68,7 @@ class ModerationService:
         self._settings_cache: dict[int, tuple[ChatSettings, float]] = {}
         self._flood_counters: dict[tuple[int, int], Deque[float]] = defaultdict(deque)
         self._raid_windows: dict[int, Deque[float]] = defaultdict(deque)
+        self._channel_posts: dict[int, ChannelPostInfo] = {}
 
     async def get_settings(self, message: Message) -> ChatSettings:
         chat = message.chat
@@ -75,12 +84,20 @@ class ModerationService:
         result = ModerationResult()
         if message.chat.type not in {"group", "supergroup"}:
             return result
+
+        settings = await self.get_settings(message)
+
+        if await self._handle_channel_post(message, settings, result):
+            return result
+
         if not message.from_user or message.from_user.is_bot:
             return result
 
-        settings = await self.get_settings(message)
         is_admin = await self.admin_service.is_admin(message.chat.id, message.from_user.id)
         if is_admin:
+            return result
+
+        if await self._apply_first_comment_guard(message, settings, result):
             return result
 
         await self._apply_night_mode(message, settings, result)
@@ -244,6 +261,62 @@ class ModerationService:
         elif text == config.downvote_command.lower():
             new_value = await self.user_service.adjust_reputation(message.chat.id, target.from_user.id, -1)
             result.add(SendMessage(text=f"Репутация пользователя {target.from_user.full_name}: {new_value}"), rule="reputation")
+
+    async def _handle_channel_post(self, message: Message, settings: ChatSettings, result: ModerationResult) -> bool:
+        if not self._is_channel_post(message):
+            return False
+        posted_at = message.date or datetime.utcnow()
+        thread_id = getattr(message, "message_thread_id", None)
+        self._channel_posts[message.chat.id] = ChannelPostInfo(
+            message_id=message.message_id,
+            posted_at=posted_at,
+            thread_id=thread_id,
+        )
+        config = settings.comment_closer
+        if config.enabled:
+            content = (message.text or message.caption or "").lower()
+            keywords = [kw.lower() for kw in config.keywords if kw]
+            if keywords and any(keyword in content for keyword in keywords):
+                if thread_id is not None:
+                    result.add(CloseTopic(message_thread_id=thread_id), rule="comment_closer")
+                else:
+                    result.add(
+                        LogAction(
+                            level="WARNING",
+                            message="comment_closer triggered but thread id is missing",
+                            extra={"chat_id": message.chat.id, "message_id": message.message_id},
+                        )
+                    )
+        return True
+
+    async def _apply_first_comment_guard(self, message: Message, settings: ChatSettings, result: ModerationResult) -> bool:
+        config = settings.first_comment_guard
+        if not config.enabled:
+            return False
+        info = self._channel_posts.get(message.chat.id)
+        if not info:
+            return False
+        now = message.date or datetime.utcnow()
+        window = timedelta(seconds=config.window_seconds)
+        if now - info.posted_at > window:
+            self._channel_posts.pop(message.chat.id, None)
+            return False
+        same_thread = False
+        if message.reply_to_message and message.reply_to_message.message_id == info.message_id:
+            same_thread = True
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id and info.thread_id and thread_id == info.thread_id:
+            same_thread = True
+        if not same_thread:
+            return False
+        result.add(DeleteMessage(message_id=message.message_id), rule="first_comment_guard")
+        return True
+
+    def _is_channel_post(self, message: Message) -> bool:
+        if getattr(message, "is_automatic_forward", False):
+            return True
+        sender_chat = getattr(message, "sender_chat", None)
+        return sender_chat is not None and getattr(sender_chat, "type", None) == "channel"
 
     def _extract_hostname(self, url: str) -> str:
         cleaned = url.lower()

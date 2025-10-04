@@ -116,4 +116,14 @@ class ApplyPenalty(ModerationAction):
         super().__setattr__("payload", {"user_id": user_id, "reason": reason, "penalty": penalty})
 
 
+@dataclass(slots=True)
+class CloseTopic(ModerationAction):
+    kind: Literal["close_topic"] = "close_topic"
+    payload: dict[str, Any]
+
+    def __init__(self, *, message_thread_id: int) -> None:
+        super().__setattr__("kind", "close_topic")
+        super().__setattr__("payload", {"message_thread_id": message_thread_id})
+
+
 ActionType = ModerationAction
