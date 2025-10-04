@@ -12,7 +12,7 @@ class ModerationAction:
     payload: dict[str, Any]
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class DeleteMessage(ModerationAction):
     kind: Literal["delete"] = "delete"
     payload: dict[str, Any] | None = None
@@ -22,7 +22,7 @@ class DeleteMessage(ModerationAction):
         super().__setattr__("payload", {"message_id": message_id})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class MuteUser(ModerationAction):
     kind: Literal["mute"] = "mute"
     payload: dict[str, Any]
@@ -32,7 +32,7 @@ class MuteUser(ModerationAction):
         super().__setattr__("payload", {"user_id": user_id, "until_seconds": until_seconds})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class BanUser(ModerationAction):
     kind: Literal["ban"] = "ban"
     payload: dict[str, Any]
@@ -49,7 +49,7 @@ class BanUser(ModerationAction):
         )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class SendMessage(ModerationAction):
     kind: Literal["send_message"] = "send_message"
     payload: dict[str, Any]
@@ -59,7 +59,7 @@ class SendMessage(ModerationAction):
         super().__setattr__("payload", {"text": text, "reply_to": reply_to, "keyboard": keyboard})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class LiftRestrictions(ModerationAction):
     kind: Literal["lift"] = "lift"
     payload: dict[str, Any]
@@ -69,7 +69,7 @@ class LiftRestrictions(ModerationAction):
         super().__setattr__("payload", {"user_id": user_id})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class WarnUser(ModerationAction):
     kind: Literal["warn"] = "warn"
     payload: dict[str, Any]
@@ -79,7 +79,7 @@ class WarnUser(ModerationAction):
         super().__setattr__("payload", {"user_id": user_id, "reason": reason})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class LogAction(ModerationAction):
     kind: Literal["log"] = "log"
     payload: dict[str, Any]
@@ -89,7 +89,7 @@ class LogAction(ModerationAction):
         super().__setattr__("payload", {"level": level, "message": message, "extra": extra or {}})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class RestrictUser(ModerationAction):
     kind: Literal["restrict"] = "restrict"
     payload: dict[str, Any]
@@ -106,7 +106,7 @@ class RestrictUser(ModerationAction):
         )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class ApplyPenalty(ModerationAction):
     kind: Literal["penalty"] = "penalty"
     payload: dict[str, Any]
@@ -116,7 +116,7 @@ class ApplyPenalty(ModerationAction):
         super().__setattr__("payload", {"user_id": user_id, "reason": reason, "penalty": penalty})
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class CloseTopic(ModerationAction):
     kind: Literal["close_topic"] = "close_topic"
     payload: dict[str, Any]

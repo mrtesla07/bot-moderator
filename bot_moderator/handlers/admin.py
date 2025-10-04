@@ -4,14 +4,23 @@ from __future__ import annotations
 
 from datetime import time
 
-from aiogram import Router
-from aiogram.errors import TelegramBadRequest
-from aiogram.filters import Command
-from aiogram.types import Message
+import json
+from io import BytesIO
+import time as time_module
 
+from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
+from aiogram.types import BufferedInputFile, Message
+from pydantic import ValidationError
+
+from ..models.settings import ChatSettings, StopWordListConfig, StopWordsConfig
 from ..services.container import ServiceContainer
 
 router = Router(name="admin")
+
+MAX_BACKUP_BYTES = 512 * 1024
+
 
 
 async def _require_admin(message: Message) -> ServiceContainer | None:
@@ -37,6 +46,49 @@ def _extract_target(message: Message, raw: str | None) -> tuple[int | None, str]
         return None, raw
 
 
+
+
+def _ensure_stopword_lists(config: StopWordsConfig) -> None:
+    if not config.lists:
+        config.lists.append(StopWordListConfig())
+    if len(config.lists) == 1:
+        config.lists.append(StopWordListConfig(name="strict", action="ban"))
+
+
+def _update_stopword_flag(config: StopWordsConfig) -> None:
+    config.enabled = any(stop_list.words for stop_list in config.lists)
+
+
+def _parse_stopword_argument(raw: str, config: StopWordsConfig) -> tuple[int, str, bool]:
+    raw = raw.strip()
+    if not raw:
+        raise ValueError("Укажите слово после команды.")
+    tokens = raw.split(maxsplit=1)
+    index = 0
+    remainder = raw
+    explicit = False
+    if tokens[0].isdigit():
+        idx = int(tokens[0])
+        if idx < 1 or idx > len(config.lists):
+            raise ValueError("Неверный номер списка. Используйте 1 или 2.")
+        if len(tokens) == 1:
+            raise ValueError("После номера списка укажите слово.")
+        index = idx - 1
+        remainder = tokens[1]
+        explicit = True
+    word = remainder.strip().lower()
+    if not word:
+        raise ValueError("Укажите слово для добавления.")
+    return index, word, explicit
+
+
+def _stopword_action_description(stop_list: StopWordListConfig) -> str:
+    if stop_list.action == "mute":
+        return f"мут на {stop_list.mute_minutes} мин"
+    if stop_list.action == "ban":
+        return "бан"
+    return "удаление"
+
 async def _resolve_user_id(services: ServiceContainer, chat_id: int, identifier: str | None, fallback_name: str) -> tuple[int | None, str]:
     if identifier is None:
         return None, fallback_name
@@ -51,6 +103,74 @@ async def _resolve_user_id(services: ServiceContainer, chat_id: int, identifier:
     except ValueError:
         return None, identifier
 
+
+
+
+@router.message(Command("dfbackup"))
+async def command_backup_settings(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    settings = await services.chats.get_settings(message.chat.id)
+    data = settings.model_dump(mode="json")
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"moderator_settings_{message.chat.id}.json"
+    document = BufferedInputFile(payload, filename=filename)
+    chat_title = getattr(message.chat, "title", None) or getattr(message.chat, "full_name", None) or str(message.chat.id)
+    await message.answer_document(document=document, caption=f"Дамп настроек для {chat_title}")
+
+
+@router.message(Command("dfrestore"))
+async def command_restore_settings(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    source_payload: str | None = None
+    reply = message.reply_to_message
+    if reply and reply.document:
+        document = reply.document
+        if document.file_size and document.file_size > MAX_BACKUP_BYTES:
+            await message.reply("Файл слишком большой, максимум 512 КБ.")
+            return
+        buffer = BytesIO()
+        try:
+            await services.bot.download(document, destination=buffer)
+        except Exception:
+            await message.reply("Не удалось скачать файл из Telegram.")
+            return
+        try:
+            source_payload = buffer.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            await message.reply("Файл должен быть в кодировке UTF-8.")
+            return
+    elif reply and reply.text:
+        source_payload = reply.text.strip()
+    elif reply and reply.caption:
+        source_payload = reply.caption.strip()
+    else:
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) > 1:
+            source_payload = parts[1].strip()
+    if not source_payload:
+        await message.reply("Пришлите файл резервной копии в ответ на команду или вставьте JSON.")
+        return
+    try:
+        data = json.loads(source_payload)
+    except json.JSONDecodeError as exc:
+        await message.reply(f"Не удалось разобрать JSON: {exc}")
+        return
+    try:
+        new_settings = ChatSettings.model_validate(data)
+    except ValidationError as exc:
+        await message.reply(f"Настройки не прошли проверку: {exc}")
+        return
+    current_settings = await services.chats.get_settings(message.chat.id)
+    new_settings.subscription = current_settings.subscription
+    await services.chats.save_settings(message.chat.id, new_settings)
+    cache = getattr(services.moderation, "_settings_cache", None)
+    if isinstance(cache, dict):
+        cache[message.chat.id] = (new_settings, time_module.time())
+    await message.reply("Настройки восстановлены.")
 
 @router.message(Command("dfsync"))
 async def command_sync(message: Message) -> None:
@@ -278,6 +398,7 @@ async def command_add_profanity(message: Message) -> None:
     await message.reply("Слово добавлено в словарь мата")
 
 
+
 @router.message(Command("addstopword"))
 async def command_add_stopword(message: Message) -> None:
     services = await _require_admin(message)
@@ -285,16 +406,27 @@ async def command_add_stopword(message: Message) -> None:
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.reply("Укажите слово для стоп-листа")
+        await message.reply("Формат: /addstopword [номер_списка] слово")
         return
     settings = await services.moderation.get_settings(message)
-    word = parts[1].strip().lower()
-    if word not in settings.stop_words.lists[0].words:
-        settings.stop_words.lists[0].words.append(word)
-        settings.stop_words.enabled = True
-        await services.chats.save_settings(message.chat.id, settings)
-    await message.reply("Стоп-слово добавлено")
-
+    config = settings.stop_words
+    _ensure_stopword_lists(config)
+    try:
+        list_index, word, _ = _parse_stopword_argument(parts[1], config)
+    except ValueError as exc:
+        await message.reply(str(exc))
+        return
+    target_list = config.lists[list_index]
+    if word in target_list.words:
+        await message.reply(f"Слово уже присутствует в списке #{list_index + 1}.")
+        return
+    for other_index, stop_list in enumerate(config.lists):
+        if other_index != list_index and word in stop_list.words:
+            stop_list.words.remove(word)
+    target_list.words.append(word)
+    _update_stopword_flag(config)
+    await services.chats.save_settings(message.chat.id, settings)
+    await message.reply(f"Слово добавлено в список #{list_index + 1} ({_stopword_action_description(target_list)}).")
 
 @router.message(Command("delstopword"))
 async def command_del_stopword(message: Message) -> None:
@@ -303,14 +435,30 @@ async def command_del_stopword(message: Message) -> None:
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.reply("Укажите слово для удаления")
+        await message.reply("Формат: /delstopword [номер_списка] слово")
         return
     settings = await services.moderation.get_settings(message)
-    word = parts[1].strip().lower()
-    if word in settings.stop_words.lists[0].words:
-        settings.stop_words.lists[0].words.remove(word)
-        await services.chats.save_settings(message.chat.id, settings)
-    await message.reply("Стоп-слово удалено")
+    config = settings.stop_words
+    _ensure_stopword_lists(config)
+    try:
+        list_index, word, explicit = _parse_stopword_argument(parts[1], config)
+    except ValueError as exc:
+        await message.reply(str(exc))
+        return
+    target_indices = [list_index] if explicit else list(range(len(config.lists)))
+    removed_from: int | None = None
+    for idx in target_indices:
+        stop_list = config.lists[idx]
+        if word in stop_list.words:
+            stop_list.words.remove(word)
+            removed_from = idx
+            break
+    if removed_from is None:
+        await message.reply("Такого слова нет в стоп-листах.")
+        return
+    _update_stopword_flag(config)
+    await services.chats.save_settings(message.chat.id, settings)
+    await message.reply(f"Слово удалено из списка #{removed_from + 1} ({_stopword_action_description(config.lists[removed_from])}).")
 
 
 @router.message(Command("liststopwords"))
@@ -319,11 +467,43 @@ async def command_list_stopwords(message: Message) -> None:
     if not services:
         return
     settings = await services.moderation.get_settings(message)
-    words = settings.stop_words.lists[0].words
-    if not words:
-        await message.reply("В стоп-листе пока пусто")
+    config = settings.stop_words
+    _ensure_stopword_lists(config)
+    lines: list[str] = []
+    header_state = "включены" if config.enabled else "отключены"
+    lines.append(f"Стоп-слова {header_state}. Порог предупреждений: {config.warn_threshold}.")
+    for index, stop_list in enumerate(config.lists, start=1):
+        action = _stopword_action_description(stop_list)
+        header = f"Список #{index} ({action})"
+        if stop_list.name and stop_list.name not in {"default", "soft", "strict"}:
+            header += f" — {stop_list.name}"
+        body = "\n".join(f"  • {word}" for word in stop_list.words) if stop_list.words else "  - пусто"
+        lines.append(f"{header}\n{body}")
+    lines.append("Используйте /addstopword и /delstopword с номером списка (1 или 2).")
+    await message.reply("\n\n".join(lines))
+
+
+@router.message(Command("setstoplimit"))
+async def command_set_stop_limit(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
         return
-    await message.reply("Стоп-слова\n" + "\n".join(words))
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.reply("Формат: /setstoplimit <1-10>")
+        return
+    try:
+        limit = int(parts[1])
+    except ValueError:
+        await message.reply("Лимит должен быть числом.")
+        return
+    if limit < 1 or limit > 10:
+        await message.reply("Значение должно быть в диапазоне от 1 до 10.")
+        return
+    settings = await services.moderation.get_settings(message)
+    settings.stop_words.warn_threshold = limit
+    await services.chats.save_settings(message.chat.id, settings)
+    await message.reply(f"Порог предупреждений по стоп-словам: {limit}.")
 
 
 @router.message(Command("setreportchat"))

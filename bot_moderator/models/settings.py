@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import time
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SilentModeConfig(BaseModel):
@@ -52,10 +52,28 @@ class StopWordListConfig(BaseModel):
     mute_minutes: int = 120
 
 
+
+
+
+def _default_stopword_lists() -> list["StopWordListConfig"]:
+    return [
+        StopWordListConfig(name="soft", action="delete"),
+        StopWordListConfig(name="strict", action="ban"),
+    ]
+
+
 class StopWordsConfig(BaseModel):
     enabled: bool = False
-    lists: list[StopWordListConfig] = Field(default_factory=lambda: [StopWordListConfig()])
+    lists: list[StopWordListConfig] = Field(default_factory=_default_stopword_lists)
     warn_threshold: int = 2
+
+    @model_validator(mode="after")
+    def _ensure_lists(cls, value: "StopWordsConfig") -> "StopWordsConfig":
+        if not value.lists:
+            value.lists = _default_stopword_lists()
+        elif len(value.lists) == 1:
+            value.lists.append(StopWordListConfig(name="strict", action="ban"))
+        return value
 
 
 class NightModeConfig(BaseModel):
