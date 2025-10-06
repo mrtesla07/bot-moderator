@@ -1,17 +1,17 @@
-﻿"""Administrative commands for managing chat settings."""
+"""Administrative commands for managing chat settings."""
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import datetime, time, timedelta
 
 import json
 from io import BytesIO
 import time as time_module
 
 from aiogram import Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BotCommand, BotCommandScopeChat, BufferedInputFile, MenuButtonCommands, MenuButtonDefault, Message
 from pydantic import ValidationError
 
 from ..models.settings import ChatSettings, StopWordListConfig, StopWordsConfig
@@ -88,6 +88,19 @@ def _stopword_action_description(stop_list: StopWordListConfig) -> str:
     if stop_list.action == "ban":
         return "бан"
     return "удаление"
+
+def _humanize_delta(delta: timedelta) -> str:
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return f"{seconds} с"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} ч {minutes % 60} мин"
+    days = hours // 24
+    return f"{days} д {hours % 24} ч"
 
 async def _resolve_user_id(services: ServiceContainer, chat_id: int, identifier: str | None, fallback_name: str) -> tuple[int | None, str]:
     if identifier is None:
@@ -171,6 +184,49 @@ async def command_restore_settings(message: Message) -> None:
     if isinstance(cache, dict):
         cache[message.chat.id] = (new_settings, time_module.time())
     await message.reply("Настройки восстановлены.")
+
+
+
+@router.message(Command("dfnocommand"))
+async def command_toggle_commands(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    settings = await services.moderation.get_settings(message)
+    config = settings.command_menu
+    bot = message.bot
+    scope = BotCommandScopeChat(chat_id=message.chat.id)
+    try:
+        if not config.hidden:
+            commands = await bot.get_my_commands(scope=scope)
+            if not commands:
+                commands = await bot.get_my_commands()
+            config.backup_commands = [
+                {"command": cmd.command, "description": cmd.description}
+                for cmd in commands
+            ]
+            await bot.set_my_commands([], scope=scope)
+            await bot.set_chat_menu_button(MenuButtonDefault())
+            config.hidden = True
+            response = "Меню команд скрыто до повторного вызова команды."
+        else:
+            if config.backup_commands:
+                restored = [
+                    BotCommand(command=item["command"], description=item["description"])
+                    for item in config.backup_commands
+                ]
+                await bot.set_my_commands(restored, scope=scope)
+            else:
+                await bot.delete_my_commands(scope=scope)
+            await bot.set_chat_menu_button(MenuButtonCommands())
+            config.hidden = False
+            config.backup_commands = []
+            response = "Меню команд восстановлено."
+    except TelegramBadRequest as exc:
+        await message.reply(f"Не удалось обновить меню: {exc}")
+        return
+    await services.chats.save_settings(message.chat.id, settings)
+    await message.reply(response)
 
 @router.message(Command("dfsync"))
 async def command_sync(message: Message) -> None:
@@ -398,6 +454,179 @@ async def command_add_profanity(message: Message) -> None:
     await message.reply("Слово добавлено в словарь мата")
 
 
+
+
+
+
+
+@router.message(Command("dfrequests"))
+async def command_list_join_requests(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    requests = await services.join_requests.list_pending(message.chat.id)
+    if not requests:
+        await message.reply("Активных заявок нет.")
+        return
+    now = datetime.utcnow()
+    lines: list[str] = []
+    limit = 10
+    for req in requests[:limit]:
+        age = now - (req.created_at or now)
+        lines.append(f"• <code>{req.user_id}</code> · {_humanize_delta(age)}")
+        payload = req.questionnaire_answers or {}
+        answers = payload.get("answers") or []
+        questions = payload.get("questions") or []
+        if answers:
+            for question, answer in zip(questions, answers):
+                lines.append(f"    {question}: {answer}")
+        else:
+            lines.append("    Ответы: ещё не получены.")
+    if len(requests) > limit:
+        lines.append(f"… и ещё {len(requests) - limit} заявок")
+    await message.reply("\n".join(lines))
+
+
+def _parse_user_id_argument(message: Message) -> int | None:
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    arg = parts[1].strip()
+    if not arg:
+        return None
+    try:
+        return int(arg.split(maxsplit=1)[0])
+    except ValueError:
+        return None
+
+
+@router.message(Command("dfapprove"))
+async def command_approve_request(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    user_id = _parse_user_id_argument(message)
+    if user_id is None:
+        await message.reply("Укажите ID пользователя: /dfapprove <user_id>.")
+        return
+    request = await services.join_requests.get_request(message.chat.id, user_id)
+    if not request or request.status != "pending":
+        await message.reply("Активная заявка не найдена.")
+        return
+    try:
+        await message.bot.approve_chat_join_request(message.chat.id, user_id)
+    except TelegramBadRequest as exc:
+        await message.reply(f"Не удалось одобрить заявку: {exc}")
+        return
+    await services.join_requests.set_status(message.chat.id, user_id, "approved")
+    await message.reply(f"Заявка пользователя <code>{user_id}</code> одобрена.")
+    try:
+        await message.bot.send_message(user_id, f"Ваша заявка в чат {message.chat.title} одобрена.")
+    except TelegramForbiddenError:
+        pass
+
+
+@router.message(Command("dfreject"))
+async def command_reject_request(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await message.reply("Укажите ID пользователя: /dfreject <user_id> [причина].")
+        return
+    try:
+        user_id = int(parts[1])
+    except ValueError:
+        await message.reply("ID пользователя должен быть числом.")
+        return
+    reason = parts[2].strip() if len(parts) > 2 else ""
+    request = await services.join_requests.get_request(message.chat.id, user_id)
+    if not request or request.status != "pending":
+        await message.reply("Активная заявка не найдена.")
+        return
+    try:
+        await message.bot.decline_chat_join_request(message.chat.id, user_id)
+    except TelegramBadRequest as exc:
+        await message.reply(f"Не удалось отклонить заявку: {exc}")
+        return
+    await services.join_requests.set_status(message.chat.id, user_id, "rejected")
+    await message.reply(f"Заявка пользователя <code>{user_id}</code> отклонена.")
+    if reason:
+        try:
+            await message.bot.send_message(user_id, f"Заявка в чат {message.chat.title} отклонена: {reason}")
+        except TelegramForbiddenError:
+            pass
+
+@router.message(Command("dfcleaner"))
+async def command_clean_states(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    states = await services.users.list_states(message.chat.id)
+    if not states:
+        await message.reply("Нет сохранённых записей пользователей.")
+        return
+    bot = message.bot
+    start = time_module.time()
+    to_remove_missing: set[int] = set()
+    to_remove_left: set[int] = set()
+    try:
+        for state in states:
+            try:
+                member = await bot.get_chat_member(message.chat.id, state.user_id)
+            except TelegramForbiddenError:
+                await message.reply("Нужны права администратора, чтобы читать список участников.")
+                return
+            except TelegramBadRequest:
+                to_remove_missing.add(state.user_id)
+                continue
+            status = getattr(member, "status", None)
+            if status in {"left", "kicked"}:
+                to_remove_left.add(state.user_id)
+    except TelegramBadRequest as exc:  # fallback if chat is inaccessible
+        await message.reply(f"Не удалось проверить участников: {exc}")
+        return
+    removed_total = 0
+    removed_total += await services.users.delete_states(message.chat.id, list(to_remove_missing))
+    removed_total += await services.users.delete_states(message.chat.id, [uid for uid in to_remove_left if uid not in to_remove_missing])
+    elapsed = time_module.time() - start
+    summary_lines = [
+        "Очистка завершена.",
+        f"Удалено записей: {removed_total} (покинули чат: {len(to_remove_left)}, не найдены: {len(to_remove_missing)}).",
+        f"Проверено записей: {len(states)} за {elapsed:.1f} с.",
+    ]
+    await message.reply("\n".join(summary_lines))
+@router.message(Command("dfcleandeleted"))
+async def command_clean_deleted(message: Message) -> None:
+    services = await _require_admin(message)
+    if not services:
+        return
+    states = await services.users.list_states(message.chat.id)
+    if not states:
+        await message.reply("Нет сохранённых записей пользователей.")
+        return
+    bot = message.bot
+    deleted_ids: set[int] = set()
+    try:
+        for state in states:
+            try:
+                member = await bot.get_chat_member(message.chat.id, state.user_id)
+            except TelegramForbiddenError:
+                await message.reply("Нужны права администратора, чтобы читать список участников.")
+                return
+            except TelegramBadRequest:
+                continue
+            if getattr(member.user, "is_deleted", False):
+                deleted_ids.add(state.user_id)
+    except TelegramBadRequest as exc:
+        await message.reply(f"Не удалось проверить участников: {exc}")
+        return
+    removed = await services.users.delete_states(message.chat.id, list(deleted_ids))
+    if removed:
+        await message.reply(f"Удалено записей удалённых аккаунтов: {removed}.")
+    else:
+        await message.reply("Удалённых аккаунтов в базе не найдено.")
 
 @router.message(Command("addstopword"))
 async def command_add_stopword(message: Message) -> None:
@@ -628,3 +857,6 @@ async def command_show_info(message: Message) -> None:
         f"• Подписка: {settings.subscription.tier}",
     ]
     await message.reply("\n".join(lines))
+
+
+

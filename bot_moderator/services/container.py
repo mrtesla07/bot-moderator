@@ -11,6 +11,7 @@ from .chat_service import ChatService
 from .moderation_service import ModerationService
 from .user_service import UserService
 from .captcha_service import CaptchaService
+from .join_request_service import JoinRequestService
 
 
 @dataclass
@@ -21,3 +22,4 @@ class ServiceContainer:
     admins: AdminService
     moderation: ModerationService
     captcha: CaptchaService
+    join_requests: JoinRequestService

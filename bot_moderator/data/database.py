@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import AsyncIterator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -44,6 +45,7 @@ class Database:
             raise RuntimeError("Database is not connected")
         return self._sessionmaker
 
+    @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
         """Context manager/generator for sessions."""
 

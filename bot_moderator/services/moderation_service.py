@@ -1,4 +1,4 @@
-﻿"""Core moderation pipeline implementing major features."""
+"""Core moderation pipeline implementing major features."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Deque
 
 from aiogram import Bot
 from aiogram.enums import ContentType
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import ChatJoinRequest, ChatMemberUpdated, Message
 
 from ..core.actions import (
@@ -30,6 +31,7 @@ from ..services.admin_service import AdminService
 from ..services.captcha_service import CaptchaService
 from ..utils import time as time_utils
 from .chat_service import ChatService
+from .join_request_service import JoinRequestService
 from .user_service import UserService
 
 URL_REGEX = re.compile(r"(?P<url>(https?://|www\.)[\w\-._~:/?#\[\]@!$&'()*+,;=%]+)", re.IGNORECASE)
@@ -50,6 +52,7 @@ class ChannelPostInfo:
 
 class ModerationService:
     captcha_service: CaptchaService
+    join_requests: JoinRequestService
     """Moderation detections orchestrator."""
 
     def __init__(
@@ -59,12 +62,14 @@ class ModerationService:
         user_service: UserService,
         admin_service: AdminService,
         captcha_service: "CaptchaService",
+        join_request_service: JoinRequestService,
     ) -> None:
         self.bot = bot
         self.chat_service = chat_service
         self.user_service = user_service
         self.admin_service = admin_service
         self.captcha_service = captcha_service
+        self.join_requests = join_request_service
         self._settings_cache: dict[int, tuple[ChatSettings, float]] = {}
         self._flood_counters: dict[tuple[int, int], Deque[float]] = defaultdict(deque)
         self._raid_windows: dict[int, Deque[float]] = defaultdict(deque)
@@ -131,13 +136,25 @@ class ModerationService:
     async def handle_join_request(self, request: ChatJoinRequest) -> ModerationResult:
         result = ModerationResult()
         settings = await self.chat_service.ensure_chat(request.chat.id, request.chat.title, request.chat.username)
-        # Simplified questionnaire check
-        if settings.questionnaire.enabled and settings.questionnaire.questions:
-            text = "\n".join(f"{idx+1}. {q}" for idx, q in enumerate(settings.questionnaire.questions))
+        config = settings.questionnaire
+        if not config.enabled:
+            return result
+        questions = list(config.questions)
+        expires_at = None
+        if config.auto_reject_seconds:
+            expires_at = datetime.utcnow() + timedelta(seconds=config.auto_reject_seconds)
+        await self.join_requests.upsert_request(
+            chat_id=request.chat.id,
+            user_id=request.from_user.id,
+            questions=questions,
+            expires_at=expires_at,
+        )
+        if questions:
+            text = "\n".join(f"{idx + 1}. {q}" for idx, q in enumerate(questions))
             result.add(
                 SendMessage(
                     text=(
-                        "Здравствуйте, {name}! Ответьте на вопросы, чтобы получить доступ:\n{questions}".format(
+                        "Здравствуйте, {name}! Ответьте на вопросы в этом чате, отправив один или несколько сообщений.\n{questions}".format(
                             name=request.from_user.full_name,
                             questions=text,
                         )
@@ -145,7 +162,90 @@ class ModerationService:
                 ),
                 rule="questionnaire",
             )
+        if config.auto_approve_seconds:
+            asyncio.create_task(
+                self._auto_approve_request(
+                    chat_id=request.chat.id,
+                    user_id=request.from_user.id,
+                    delay=config.auto_approve_seconds,
+                )
+            )
+        if config.auto_reject_seconds:
+            asyncio.create_task(
+                self._auto_reject_request(
+                    chat_id=request.chat.id,
+                    user_id=request.from_user.id,
+                    delay=config.auto_reject_seconds,
+                )
+            )
         return result
+
+    async def handle_questionnaire_response(self, user_id: int, answers: list[str]):
+        pending = await self.join_requests.list_pending_for_user(user_id)
+        if not pending:
+            return None
+        request = pending[0]
+        await self.join_requests.store_answers(request.chat_id, user_id, answers)
+        approved = False
+        settings = await self.chat_service.get_settings(request.chat_id)
+        config = settings.questionnaire
+        if config.auto_approve_seconds == 0:
+            try:
+                await self.bot.approve_chat_join_request(request.chat_id, user_id)
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+            else:
+                await self.join_requests.set_status(request.chat_id, user_id, "approved")
+                approved = True
+        return request, approved
+
+    async def _auto_approve_request(self, chat_id: int, user_id: int, delay: int) -> None:
+        await asyncio.sleep(delay)
+        request = await self.join_requests.get_request(chat_id, user_id)
+        if not request or request.status != "pending":
+            return
+        answers = (request.questionnaire_answers or {}).get("answers") or []
+        if not answers:
+            return
+        try:
+            await self.bot.approve_chat_join_request(chat_id, user_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return
+        await self.join_requests.set_status(chat_id, user_id, "approved")
+        chat_title = str(chat_id)
+        try:
+            chat = await self.bot.get_chat(chat_id)
+            chat_title = chat.title or getattr(chat, "full_name", None) or str(chat_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+        try:
+            await self.bot.send_message(user_id, f"Ваша заявка в чат {chat_title} одобрена автоматически.")
+        except TelegramForbiddenError:
+            pass
+
+    async def _auto_reject_request(self, chat_id: int, user_id: int, delay: int) -> None:
+        await asyncio.sleep(delay)
+        request = await self.join_requests.get_request(chat_id, user_id)
+        if not request or request.status != "pending":
+            return
+        answers = (request.questionnaire_answers or {}).get("answers") or []
+        if answers:
+            return
+        try:
+            await self.bot.decline_chat_join_request(chat_id, user_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            return
+        await self.join_requests.set_status(chat_id, user_id, "rejected")
+        chat_title = str(chat_id)
+        try:
+            chat = await self.bot.get_chat(chat_id)
+            chat_title = chat.title or getattr(chat, "full_name", None) or str(chat_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+        try:
+            await self.bot.send_message(user_id, f"Заявка в чат {chat_title} отклонена автоматически.")
+        except TelegramForbiddenError:
+            pass
 
     async def _apply_night_mode(self, message: Message, settings: ChatSettings, result: ModerationResult) -> None:
         config = settings.night_mode

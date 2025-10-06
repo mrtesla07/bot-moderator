@@ -1,4 +1,4 @@
-﻿"""Event handlers for moderation pipeline."""
+"""Event handlers for moderation pipeline."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from aiogram import Router
 from aiogram.enums import ContentType
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import ChatJoinRequest, ChatMemberUpdated, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -29,6 +30,32 @@ def _should_silence(settings, rule: str) -> bool:
     return any(rule.startswith(prefix) for prefix in silent.suppress_events)
 
 
+def _normalize_rule_name(rule: str) -> str:
+    return rule.split(':', 1)[0]
+
+
+def _filter_report_rules(rules: list[str], report_config) -> list[str]:
+    include = report_config.include_rules
+    exclude = report_config.exclude_rules
+    filtered: list[str] = []
+    for rule in rules:
+        base = _normalize_rule_name(rule)
+        if include and base not in include and rule not in include:
+            continue
+        if exclude and (base in exclude or rule in exclude):
+            continue
+        filtered.append(rule)
+    return filtered
+
+
+def _build_report_message(rules: list[str], result: ModerationResult, report_config) -> str:
+    lines = ["Сработали правила:"]
+    lines.extend(f"• {rule}" for rule in rules)
+    if report_config.include_actions and result.actions:
+        action_kinds = sorted({action.kind for action in result.actions})
+        lines.append("Действия: " + ", ".join(action_kinds))
+    lines.append("Действия: " + ", ".join(action_kinds))
+    return "\n".join(lines)
 async def apply_actions(message: Message, result: ModerationResult, settings) -> None:
     if not result.actions:
         return
@@ -131,10 +158,55 @@ async def apply_actions(message: Message, result: ModerationResult, settings) ->
         else:
             logging.debug("Unhandled action %s", action)
 
-    if settings.reports.enabled and settings.reports.destination_chat_id and result.triggered_rules:
-        summary = "; ".join(result.triggered_rules)
-        await bot.send_message(settings.reports.destination_chat_id, f"Сработали правила: {summary}")
+    report_config = settings.reports
+    if report_config.enabled and report_config.destination_chat_id and result.triggered_rules:
+        rules = _filter_report_rules(result.triggered_rules, report_config)
+        if rules:
+            text_message = _build_report_message(rules, result, report_config)
+            destinations = {report_config.destination_chat_id}
+            if settings.is_premium() and report_config.secondary_chat_id:
+                destinations.add(report_config.secondary_chat_id)
+            for target in destinations:
+                try:
+                    await bot.send_message(target, text_message)
+                except TelegramBadRequest as exc:
+                    logging.warning("Не удалось отправить отчёт: %s", exc)
+            if report_config.notify_admins:
+                services: ServiceContainer = message.bot["services"]
+                admin_ids = await services.admins.get_admin_ids(message.chat.id)
+                for admin_id in admin_ids:
+                    try:
+                        await bot.send_message(admin_id, text_message)
+                    except TelegramForbiddenError:
+                        continue
 
+
+
+@router.message(lambda msg: msg.chat.type == "private")
+async def handle_private_questionnaire(message: Message) -> None:
+    services: ServiceContainer = message.bot["services"]
+    if not message.text:
+        await message.answer("Отправьте ответы текстом.")
+        return
+    answers = [line.strip() for line in message.text.splitlines() if line.strip()]
+    if not answers:
+        await message.answer("Отправьте текст с ответами.")
+        return
+    moderation = services.moderation
+    stored = await moderation.handle_questionnaire_response(message.from_user.id, answers)
+    if stored is None:
+        await message.answer("Активных заявок не найдено.")
+        return
+    request, approved = stored
+    try:
+        chat = await message.bot.get_chat(request.chat_id)
+        chat_name = chat.title or str(request.chat_id)
+    except TelegramBadRequest:
+        chat_name = str(request.chat_id)
+    if approved:
+        await message.answer(f"Ответы получены, заявка в «{chat_name}» одобрена автоматически.")
+    else:
+        await message.answer(f"Ответы сохранены и переданы модераторам чата «{chat_name}». Ожидайте решения.")
 
 @router.message(Command("ping"))
 async def handle_ping(message: Message) -> None:
@@ -190,3 +262,4 @@ async def handle_chat_member_update(update: ChatMemberUpdated) -> None:
     for action in result.actions:
         if isinstance(action, LogAction):
             getattr(logging, action.payload["level"].lower(), logging.info)(action.payload["message"], extra=action.payload.get("extra"))
+

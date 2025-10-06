@@ -38,6 +38,14 @@ class ProfanityConfig(BaseModel):
 
 class LinkGuardConfig(BaseModel):
     enabled: bool = True
+
+
+
+class CommandMenuConfig(BaseModel):
+    hidden: bool = False
+    backup_commands: list[dict[str, str]] = Field(default_factory=list)
+
+
     allow_trusted: bool = True
     block_all: bool = False
     whitelist_domains: list[str] = Field(default_factory=list)
@@ -120,6 +128,10 @@ class ReportsConfig(BaseModel):
     enabled: bool = True
     destination_chat_id: int | None = None
     include_actions: bool = True
+    include_rules: set[str] = Field(default_factory=set)
+    exclude_rules: set[str] = Field(default_factory=set)
+    notify_admins: bool = False
+    secondary_chat_id: int | None = None
 
 
 class CrossBanConfig(BaseModel):
@@ -193,6 +205,7 @@ class QuestionnaireConfig(BaseModel):
     enabled: bool = False
     questions: list[str] = Field(default_factory=list)
     auto_reject_seconds: int = 180
+    auto_approve_seconds: int | None = None
 
 
 class SubscriptionConfig(BaseModel):
@@ -207,6 +220,7 @@ class ChatSettings(BaseModel):
     flood: FloodProtectionConfig = Field(default_factory=FloodProtectionConfig)
     profanity: ProfanityConfig = Field(default_factory=ProfanityConfig)
     link_guard: LinkGuardConfig = Field(default_factory=LinkGuardConfig)
+    command_menu: CommandMenuConfig = Field(default_factory=CommandMenuConfig)
     stop_words: StopWordsConfig = Field(default_factory=StopWordsConfig)
     night_mode: NightModeConfig = Field(default_factory=NightModeConfig)
     system_messages: SystemMessagesConfig = Field(default_factory=SystemMessagesConfig)

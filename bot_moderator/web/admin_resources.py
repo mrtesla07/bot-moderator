@@ -23,6 +23,61 @@ class ChatResource(Model):
         "username",
         "subscription_tier",
         Field(
+            name="command_menu_hidden",
+            label="Скрыть меню команд",
+            input_=inputs.Switch(),
+        ),
+        Field(
+            name="reports_enabled",
+            label="Включить отчёты",
+            input_=inputs.Switch(),
+        ),
+        Field(
+            name="reports_notify_admins",
+            label="Оповещать админов",
+            input_=inputs.Switch(),
+        ),
+        Field(
+            name="reports_destination_chat_id",
+            label="Основной чат отчётов",
+            input_=inputs.Number(step=1),
+        ),
+        Field(
+            name="reports_secondary_chat_id",
+            label="Дополнительный чат (premium)",
+            input_=inputs.Number(step=1, null=True),
+        ),
+        Field(
+            name="reports_include_rules",
+            label="Отчёт: включить правила",
+            input_=inputs.TextArea(),
+        ),
+        Field(
+            name="reports_exclude_rules",
+            label="Отчёт: исключить правила",
+            input_=inputs.TextArea(),
+        ),
+        Field(
+            name="questionnaire_enabled",
+            label="Анкета включена",
+            input_=inputs.Switch(),
+        ),
+        Field(
+            name="questionnaire_questions",
+            label="Вопросы анкеты",
+            input_=inputs.TextArea(),
+        ),
+        Field(
+            name="questionnaire_auto_approve_seconds",
+            label="Автоодобрение, сек",
+            input_=inputs.Number(step=1),
+        ),
+        Field(
+            name="questionnaire_auto_reject_seconds",
+            label="Автоотклонение, сек",
+            input_=inputs.Number(step=1),
+        ),
+        Field(
             name="settings",
             label="Настройки",
             display=displays.Json(),

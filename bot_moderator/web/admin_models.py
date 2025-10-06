@@ -32,6 +32,130 @@ class Chat(Model):
         table = "chats"
 
 
+    def _ensure_section(self, path: tuple[str, ...]) -> dict:
+        node = self.settings
+        for key in path:
+            node = node.setdefault(key, {})
+        return node
+
+    @staticmethod
+    def _parse_optional_int(value: int | str | None) -> int | None:
+        if value in (None, '', 'None'):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def command_menu_hidden(self) -> bool:
+        return self.settings.get("command_menu", {}).get("hidden", False)
+
+    @command_menu_hidden.setter
+    def command_menu_hidden(self, value: bool) -> None:
+        section = self._ensure_section(("command_menu",))
+        section["hidden"] = bool(value)
+
+    @property
+    def reports_enabled(self) -> bool:
+        return self.settings.get("reports", {}).get("enabled", True)
+
+    @reports_enabled.setter
+    def reports_enabled(self, value: bool) -> None:
+        section = self._ensure_section(("reports",))
+        section["enabled"] = bool(value)
+
+    @property
+    def reports_notify_admins(self) -> bool:
+        return self.settings.get("reports", {}).get("notify_admins", False)
+
+    @reports_notify_admins.setter
+    def reports_notify_admins(self, value: bool) -> None:
+        section = self._ensure_section(("reports",))
+        section["notify_admins"] = bool(value)
+
+    @property
+    def reports_destination_chat_id(self) -> int | None:
+        return self.settings.get("reports", {}).get("destination_chat_id")
+
+    @reports_destination_chat_id.setter
+    def reports_destination_chat_id(self, value: int | None) -> None:
+        section = self._ensure_section(("reports",))
+        section["destination_chat_id"] = self._parse_optional_int(value)
+
+    @property
+    def reports_secondary_chat_id(self) -> int | None:
+        return self.settings.get("reports", {}).get("secondary_chat_id")
+
+    @reports_secondary_chat_id.setter
+    def reports_secondary_chat_id(self, value: int | None) -> None:
+        section = self._ensure_section(("reports",))
+        section["secondary_chat_id"] = self._parse_optional_int(value)
+
+    @property
+    def reports_include_rules(self) -> str:
+        rules = self.settings.get("reports", {}).get("include_rules", [])
+        return ", ".join(rules)
+
+    @reports_include_rules.setter
+    def reports_include_rules(self, value: str) -> None:
+        section = self._ensure_section(("reports",))
+        rules = [item.strip() for item in (value or "").split(",") if item.strip()]
+        section["include_rules"] = rules
+
+    @property
+    def reports_exclude_rules(self) -> str:
+        rules = self.settings.get("reports", {}).get("exclude_rules", [])
+        return ", ".join(rules)
+
+    @reports_exclude_rules.setter
+    def reports_exclude_rules(self, value: str) -> None:
+        section = self._ensure_section(("reports",))
+        rules = [item.strip() for item in (value or "").split(",") if item.strip()]
+        section["exclude_rules"] = rules
+
+    @property
+    def questionnaire_enabled(self) -> bool:
+        return self.settings.get("questionnaire", {}).get("enabled", False)
+
+    @questionnaire_enabled.setter
+    def questionnaire_enabled(self, value: bool) -> None:
+        section = self._ensure_section(("questionnaire",))
+        section["enabled"] = bool(value)
+
+    @property
+    def questionnaire_questions(self) -> str:
+        questions = self.settings.get("questionnaire", {}).get("questions", [])
+        return "
+".join(questions)
+
+    @questionnaire_questions.setter
+    def questionnaire_questions(self, value: str) -> None:
+        section = self._ensure_section(("questionnaire",))
+        questions = [line.strip() for line in (value or "").splitlines() if line.strip()]
+        section["questions"] = questions
+
+    @property
+    def questionnaire_auto_approve_seconds(self) -> int:
+        return self.settings.get("questionnaire", {}).get("auto_approve_seconds") or 0
+
+    @questionnaire_auto_approve_seconds.setter
+    def questionnaire_auto_approve_seconds(self, value: int) -> None:
+        section = self._ensure_section(("questionnaire",))
+        seconds = int(value)
+        seconds = self._parse_optional_int(value) or 0
+        section["auto_approve_seconds"] = max(seconds, 0)
+
+    @property
+    def questionnaire_auto_reject_seconds(self) -> int:
+        return self.settings.get("questionnaire", {}).get("auto_reject_seconds", 180)
+
+    @questionnaire_auto_reject_seconds.setter
+    def questionnaire_auto_reject_seconds(self, value: int) -> None:
+        section = self._ensure_section(("questionnaire",))
+        seconds = self._parse_optional_int(value) or 0
+        section["auto_reject_seconds"] = max(seconds, 0)
+
 class UserState(Model):
     id = fields.IntField(pk=True)
     chat_id = fields.IntField(index=True)

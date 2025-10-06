@@ -1,10 +1,10 @@
-﻿"""Manage per-user moderation state."""
+"""Manage per-user moderation state."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from ..data.database import Database
 from ..models.entities import UserState
@@ -93,6 +93,29 @@ class UserService:
                 .values(extra=extra, updated_at=datetime.utcnow())
             )
             await session.commit()
+
+    async def list_states(self, chat_id: int) -> list[UserState]:
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(UserState).where(UserState.chat_id == chat_id)
+            )
+            return list(result.scalars())
+
+    async def delete_states(self, chat_id: int, user_ids: list[int]) -> int:
+        if not user_ids:
+            return 0
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(UserState.id).where(UserState.chat_id == chat_id, UserState.user_id.in_(user_ids))
+            )
+            ids = [row[0] for row in result]
+            if not ids:
+                return 0
+            await session.execute(
+                delete(UserState).where(UserState.id.in_(ids))
+            )
+            await session.commit()
+            return len(ids)
 
     async def list_whitelisted(self, chat_id: int) -> list[UserState]:
         async with self._db.session() as session:

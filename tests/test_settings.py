@@ -60,3 +60,22 @@ def test_parse_stopword_argument_without_index():
     assert word == "gamma"
     assert explicit is False
 
+def test_command_menu_defaults():
+    settings = settings_mod.ChatSettings()
+    assert settings.command_menu.hidden is False
+    assert settings.command_menu.backup_commands == []
+
+
+def test_reports_defaults():
+    reports = settings_mod.ChatSettings().reports
+    assert reports.include_rules == set()
+    assert reports.exclude_rules == set()
+    assert reports.notify_admins is False
+    assert reports.secondary_chat_id is None
+
+
+def test_questionnaire_defaults():
+    questionnaire = settings_mod.ChatSettings().questionnaire
+    assert questionnaire.auto_reject_seconds == 180
+    assert questionnaire.auto_approve_seconds is None
+

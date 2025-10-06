@@ -14,6 +14,7 @@ from ..services.admin_service import AdminService
 from ..services.chat_service import ChatService
 from ..services.container import ServiceContainer
 from ..services.captcha_service import CaptchaService
+from ..services.join_request_service import JoinRequestService
 from ..services.moderation_service import ModerationService
 from ..services.user_service import UserService
 from ..web.server import create_app
@@ -37,12 +38,14 @@ class Application:
         user_service = UserService(self.database)
         admin_service = AdminService(self.bot)
         captcha_service = CaptchaService(self.database)
+        join_request_service = JoinRequestService(self.database)
         moderation_service = ModerationService(
             bot=self.bot,
             chat_service=chat_service,
             user_service=user_service,
             admin_service=admin_service,
             captcha_service=captcha_service,
+            join_request_service=join_request_service,
         )
         self.services = ServiceContainer(
             bot=self.bot,
@@ -51,6 +54,7 @@ class Application:
             admins=admin_service,
             moderation=moderation_service,
             captcha=captcha_service,
+            join_requests=join_request_service,
         )
 
         self.dispatcher["settings"] = self.settings
